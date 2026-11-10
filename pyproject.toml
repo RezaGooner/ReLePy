@@ -7,20 +7,23 @@ name = "relepy"
 dynamic = ["version"]
 description = "ReLePy: a modular, well-tested reinforcement learning library with a simple fit/predict API."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Reza Asadi", email = "RezaAsadiProgrammer@Gmail.com" }]
-keywords = ["reinforcement-learning", "rl", "dqn", "ppo", "a2c", "gymnasium", "pytorch"]
+keywords = [
+    "reinforcement-learning", "rl", "q-learning", "dqn", "ppo", "a2c", "sac", "td3",
+    "gymnasium", "pytorch",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
@@ -32,17 +35,24 @@ dependencies = [
 [project.optional-dependencies]
 torch = ["torch>=2.0"]
 dev = ["pytest>=7", "pytest-cov", "ruff", "mypy", "build", "twine"]
-all = ["relepy[torch,dev]"]
+benchmark = ["matplotlib"]
+all = ["relepy[torch,dev,benchmark]"]
 
 [project.urls]
-Homepage = "https://github.com/RezaGooner/relepy"
-Issues = "https://github.com/RezaGooner/relepy/issues"
+Homepage = "https://github.com/RezaGooner/ReLePy"
+Documentation = "https://github.com/RezaGooner/ReLePy/tree/main/docs"
+Changelog = "https://github.com/RezaGooner/ReLePy/blob/main/CHANGELOG.md"
+Issues = "https://github.com/RezaGooner/ReLePy/issues"
 
 [tool.hatch.version]
 path = "src/relepy/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/relepy"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "examples", "benchmarks", "docs", "README.md", "CHANGELOG.md",
+           "CONTRIBUTING.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -51,12 +61,11 @@ markers = ["slow: long-running learning tests (run with: pytest -m slow)"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "examples", "benchmarks"]
 
 [tool.ruff.lint]
 select = ["E", "F"]
 
 [tool.mypy]
-python_version = "3.9"
 ignore_missing_imports = true
 warn_unused_ignores = true
