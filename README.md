@@ -1,9 +1,14 @@
 # ReLePy
 
+[![PyPI](https://img.shields.io/pypi/v/relepy.svg)](https://pypi.org/project/relepy/)
+[![Python](https://img.shields.io/pypi/pyversions/relepy.svg)](https://pypi.org/project/relepy/)
+[![CI](https://github.com/RezaGooner/ReLePy/actions/workflows/ci.yml/badge.svg)](https://github.com/RezaGooner/ReLePy/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **ReLePy** is a modular reinforcement learning library for Python with a small, consistent API:
 build an agent, `fit` it, `predict` with it, `evaluate` it, `save` / `load` it. Every algorithm
 has a typed, validated configuration object, so hyperparameters are explicit and experiments
-are reproducible.
+are reproducible, from tabular Q-learning to SAC.
 
 ```python
 from relepy import DQN
@@ -34,7 +39,32 @@ From source: `pip install -e ".[torch,dev]"`.
 | Policy gradient | `REINFORCE`, `A2C`, `PPO` | Box / Discrete | Discrete / Box |
 | Off-policy actor-critic | `DDPG`, `TD3`, `SAC` | Box / Discrete | Box (bounded) |
 
-Planned: vectorized environments, prioritized replay, n-step returns, a safer model format.
+All algorithms support several parallel environments (`n_envs`).
+
+## Parallel environments
+
+```python
+from relepy import PPO
+
+agent = PPO("CartPole-v1", n_envs=8, n_steps=128, batch_size=256, seed=0)
+agent.fit(100_000)
+```
+
+Pass an env id or a factory (`lambda: gym.make("CartPole-v1")`) when `n_envs > 1`. Timestep
+budgets always count steps summed over all environments.
+
+## Building agents by name
+
+```python
+import relepy
+
+relepy.list_algorithms()                   # ['a2c', 'ddpg', 'double_dqn', 'dqn', ...]
+agent = relepy.make("sac", "Pendulum-v1", seed=0)
+agent = relepy.load("model.relepy", "Pendulum-v1")   # algorithm is read from the file
+```
+
+Your own agents can join the registry with `@relepy.register("my_algo")`; see
+[`examples/custom_algorithm.py`](examples/custom_algorithm.py).
 
 ## Hyperparameters
 
@@ -67,27 +97,44 @@ agent.fit(
 Write your own by subclassing `relepy.Callback`; return `False` from `on_step` to stop training.
 Training statistics are kept in `agent.logger.history` (a list of dicts).
 
-## Design notes
+## Design
 
-* Works with any [Gymnasium](https://gymnasium.farama.org/) environment (pass an id or an instance).
+* **Components**: a `Collector` does all environment interaction; shared training-loop templates
+  (`StepwiseAgent`, `OffPolicyAgent`, `OnPolicyAgent`) and loss functions
+  (`relepy.core.losses`) keep each algorithm short. See [docs/index.md](docs/index.md).
+* Works with any [Gymnasium](https://gymnasium.farama.org/) environment (id, factory or instance).
 * `Discrete` observations are one-hot encoded for neural agents; `Box` observations are flattened.
 * Time-limit truncation is handled correctly: value targets still bootstrap when an episode is
   truncated, and only true termination zeroes the bootstrap.
-* Saved files (`.relepy`) use `pickle`: only load files you trust.
-* Currently single-environment training (no vectorized environments yet).
+* **Safe model files**: `.relepy` files are ZIP archives of JSON and NumPy arrays; loading
+  never executes code. Files from 0.1.x need `allow_legacy_pickle=True` once.
+
+## Benchmarks
+
+```bash
+pip install -e ".[torch,benchmark]"
+python benchmarks/run_benchmarks.py --suite quick --seeds 0 1 2
+```
+
+Results (CSV, learning curves, Markdown summary) are written to `benchmark_results/`.
 
 ## Development
 
 ```bash
 pip install -e ".[torch,dev]"
-ruff check src tests
+ruff check src tests examples benchmarks
+mypy src
 pytest                    # fast tests
 pytest -m slow            # learning tests (minutes)
 ```
 
-## Citation
+See [CONTRIBUTING.md](CONTRIBUTING.md) for adding algorithms and making releases, and
+[CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 
-A paper is in preparation. Until then, please cite the repository.
+## Roadmap
+
+Prioritized replay and n-step returns, observation/reward normalization, CNN and recurrent
+policies, more algorithms (classic DP/Monte-Carlo/bandits, Rainbow, TRPO, TQC, offline RL).
 
 ## License
 
