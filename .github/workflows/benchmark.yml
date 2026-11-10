@@ -1,0 +1,31 @@
+# Manually triggered benchmark (Actions tab -> Benchmark -> Run workflow).
+# Results (CSV, summary table, learning curves) are uploaded as a workflow artifact.
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Benchmark suite"
+        type: choice
+        options: [quick, full]
+        default: quick
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[benchmark]"
+      - run: python benchmarks/run_benchmarks.py --suite ${{ inputs.suite }} --out benchmark_results
+      - run: cat benchmark_results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ inputs.suite }}
+          path: benchmark_results/

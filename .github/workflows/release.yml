@@ -1,20 +1,86 @@
+# Publishes to PyPI when a version tag (e.g. v0.2.0) is pushed -- also when the tag is created
+# from the GitHub website with "Draft a new release". If it does not start, run it by hand:
+# Actions -> Release -> Run workflow -> "Use workflow from": select the tag.
+#
+# One-time setup (no API token needed, "Trusted Publishing"):
+#   1. On https://pypi.org/manage/project/relepy/settings/publishing/ add a GitHub publisher:
+#        owner: RezaGooner   repository: ReLePy   workflow: release.yml   environment: pypi
+#   2. On GitHub: Settings -> Environments -> New environment named "pypi".
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 jobs:
-  publish:
+  test:
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write   
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install build
+          cache: pip
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: pytest -m "not slow"
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check that the tag matches the package version
+        run: |
+          VERSION=$(python -c "import re;print(re.search(r'\"(.+)\"', open('src/relepy/_version.py').read()).group(1))")
+          if [ "v$VERSION" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version $VERSION"; exit 1
+          fi
+      - run: pip install build twine
       - run: python -m build
+      - run: twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true   # re-running the workflow does not fail on uploaded files
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create the GitHub release (or attach the files if it already exists)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" \
+              --title "${GITHUB_REF_NAME}" --generate-notes
+          fi
