@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Dict
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
-from relepy.algorithms.actor_critic._base import OffPolicyAgent, OffPolicyConfig
+from relepy.algorithms.actor_critic._base import ContinuousOffPolicyAgent, OffPolicyConfig
+from relepy.core.losses import deterministic_actor_loss, deterministic_critic_loss
 from relepy.core.policies import ContinuousCritic, DeterministicActor
-from relepy.utils.torch_utils import polyak_update, to_cpu
+from relepy.utils.torch_utils import polyak_update
 
 
 @dataclass
@@ -46,7 +46,7 @@ class DDPGConfig(OffPolicyConfig):
             raise ValueError("policy_delay and n_critics must be >= 1")
 
 
-class DDPG(OffPolicyAgent):
+class DDPG(ContinuousOffPolicyAgent):
     """DDPG for bounded continuous action spaces.
 
     Example:
@@ -56,6 +56,9 @@ class DDPG(OffPolicyAgent):
 
     config_class = DDPGConfig
     config: DDPGConfig
+    _state_attrs = (
+        "actor", "actor_target", "critic", "critic_target", "actor_optimizer", "critic_optimizer",
+    )
 
     def _build(self) -> None:
         cfg = self.config
@@ -69,55 +72,32 @@ class DDPG(OffPolicyAgent):
         self.critic_target = deepcopy(self.critic).eval()
         for p in list(self.actor_target.parameters()) + list(self.critic_target.parameters()):
             p.requires_grad_(False)
-        actor_lr = cfg.actor_learning_rate or cfg.learning_rate
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.actor_lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=cfg.learning_rate)
         self._n_updates = 0
 
-    def _policy_action(self, obs_vec: np.ndarray, deterministic: bool) -> np.ndarray:
+    def _policy_actions(self, obs_vecs: np.ndarray, deterministic: bool) -> np.ndarray:
         with torch.no_grad():
-            action = self.actor(self._obs_tensor(obs_vec))[0].cpu().numpy()
+            actions = self.actor(self._obs_tensor(obs_vecs)).cpu().numpy()
         if not deterministic and self.config.exploration_noise > 0:
-            action = action + self.rng.normal(0.0, self.config.exploration_noise, action.shape)
-        return np.clip(action, -1.0, 1.0).astype(np.float32)
+            actions = actions + self.rng.normal(0.0, self.config.exploration_noise, actions.shape)
+        return np.clip(actions, -1.0, 1.0).astype(np.float32)
 
     def _train_step(self) -> Dict[str, float]:
         cfg = self.config
         batch = self.buffer.sample(cfg.batch_size, self.device)
-        with torch.no_grad():
-            next_actions = self.actor_target(batch.next_observations)
-            if cfg.target_policy_noise > 0:
-                noise = torch.randn_like(next_actions) * cfg.target_policy_noise
-                noise = noise.clamp(-cfg.target_noise_clip, cfg.target_noise_clip)
-                next_actions = (next_actions + noise).clamp(-1.0, 1.0)
-            next_q = self.critic_target.q_min(batch.next_observations, next_actions)
-            target = batch.rewards + cfg.gamma * (1.0 - batch.dones) * next_q
-
-        critic_loss = sum(
-            F.mse_loss(q, target) for q in self.critic(batch.observations, batch.actions)
+        critic_loss = deterministic_critic_loss(
+            self.critic, self.critic_target, self.actor_target, batch, cfg.gamma,
+            cfg.target_policy_noise, cfg.target_noise_clip,
         )
         self._optimize(self.critic_optimizer, critic_loss, self.critic.parameters())
         stats = {"train/critic_loss": critic_loss.item()}
 
         self._n_updates += 1
         if self._n_updates % cfg.policy_delay == 0:
-            actor_loss = -self.critic.q1(batch.observations, self.actor(batch.observations)).mean()
+            actor_loss = deterministic_actor_loss(self.critic, self.actor, batch.observations)
             self._optimize(self.actor_optimizer, actor_loss, self.actor.parameters())
             polyak_update(self.actor, self.actor_target, cfg.tau)
             polyak_update(self.critic, self.critic_target, cfg.tau)
             stats["train/actor_loss"] = actor_loss.item()
         return stats
-
-    # ------------------------------------------------------------- persistence
-    def _get_state(self) -> Dict[str, Any]:
-        return {
-            name: to_cpu(getattr(self, name).state_dict())
-            for name in (
-                "actor", "actor_target", "critic", "critic_target",
-                "actor_optimizer", "critic_optimizer",
-            )
-        }
-
-    def _set_state(self, state: Dict[str, Any]) -> None:
-        for name, value in state.items():
-            getattr(self, name).load_state_dict(value)

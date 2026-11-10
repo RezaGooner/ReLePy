@@ -1,18 +1,17 @@
-"""Advantage Actor-Critic (Mnih et al., 2016), synchronous single-environment version."""
+"""Advantage Actor-Critic (Mnih et al., 2016), synchronous version."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict
 
-import torch.nn.functional as F
-
-from relepy.algorithms.policy_gradient._base import OnPolicyAgent, OnPolicyConfig
+from relepy.core.losses import a2c_loss
+from relepy.core.on_policy import OnPolicyAgent, OnPolicyConfig
 
 
 @dataclass
 class A2CConfig(OnPolicyConfig):
-    """A2C hyperparameters. See :class:`OnPolicyConfig` for the shared ones."""
+    """A2C hyperparameters. See :class:`~relepy.core.on_policy.OnPolicyConfig`."""
 
     learning_rate: float = 7e-4
     n_steps: int = 16
@@ -21,9 +20,9 @@ class A2CConfig(OnPolicyConfig):
 
 
 class A2C(OnPolicyAgent):
-    """A2C: one gradient step per rollout of ``n_steps`` steps, with GAE advantages.
+    """A2C: one gradient step per rollout of ``n_steps * n_envs`` samples, GAE advantages.
 
-    Supports ``Discrete`` and ``Box`` action spaces.
+    Supports ``Discrete`` and ``Box`` action spaces and ``n_envs > 1``.
     """
 
     config_class = A2CConfig
@@ -32,17 +31,8 @@ class A2C(OnPolicyAgent):
     def _update(self) -> Dict[str, float]:
         cfg = self.config
         batch = next(self.rollout_buffer.get(None, self.device))
-        values, log_prob, entropy = self.policy.evaluate_actions(batch.observations, batch.actions)
-        adv = batch.advantages
-        if cfg.normalize_advantage and adv.numel() > 1:
-            adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-        policy_loss = -(adv * log_prob).mean()
-        value_loss = F.mse_loss(values, batch.returns)
-        entropy_loss = -entropy.mean()
-        loss = policy_loss + cfg.value_coef * value_loss + cfg.entropy_coef * entropy_loss
+        loss, stats = a2c_loss(
+            self.policy, batch, cfg.value_coef, cfg.entropy_coef, cfg.normalize_advantage
+        )
         self._optimize(loss)
-        return {
-            "train/policy_loss": policy_loss.item(),
-            "train/value_loss": value_loss.item(),
-            "train/entropy": -entropy_loss.item(),
-        }
+        return stats

@@ -27,7 +27,7 @@ def test_gae_matches_reward_to_go_when_lambda_is_one():
         buf.add(np.zeros(1), 0, r, d, value=0.0, log_prob=0.0)
     buf.compute_returns_and_advantages(last_value=0.0, gamma=1.0, gae_lambda=1.0)
     # episode 1 = steps 0-2 (return 3, 2, 1); step 3 starts a new episode (return 1)
-    np.testing.assert_allclose(buf.returns, [3.0, 2.0, 1.0, 1.0])
+    np.testing.assert_allclose(buf.returns.ravel(), [3.0, 2.0, 1.0, 1.0])
 
 
 def test_gae_bootstraps_last_value():
@@ -35,4 +35,5 @@ def test_gae_bootstraps_last_value():
     for _ in range(2):
         buf.add(np.zeros(1), 0, 1.0, False, value=0.0, log_prob=0.0)
     buf.compute_returns_and_advantages(last_value=10.0, gamma=0.5, gae_lambda=1.0)
-    np.testing.assert_allclose(buf.returns, [1.0 + 0.5 * (1.0 + 0.5 * 10.0), 1.0 + 0.5 * 10.0])
+    expected = [1.0 + 0.5 * (1.0 + 0.5 * 10.0), 1.0 + 0.5 * 10.0]
+    np.testing.assert_allclose(buf.returns.ravel(), expected)

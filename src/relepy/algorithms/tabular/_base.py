@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import numpy as np
 
-from relepy.core.base import BaseAgent
+from relepy.core.collector import Transition
 from relepy.core.config import BaseConfig
+from relepy.core.loops import StepwiseAgent
 from relepy.utils.schedules import linear_schedule
 from relepy.utils.spaces import check_discrete
 
@@ -42,15 +43,17 @@ class TabularConfig(BaseConfig):
             raise ValueError("epsilon_decay_steps must be >= 0")
 
 
-class TabularAgent(BaseAgent):
+class TabularAgent(StepwiseAgent):
     """Base class for Q-table agents. Requires ``Discrete`` observation and action spaces.
 
     ``fit(..., log_interval=k)`` logs every ``k`` episodes. The learned table is ``q_table``
-    with shape ``(n_states, n_actions)``.
+    with shape ``(n_states, n_actions)``. Works with ``n_envs > 1``: every environment's
+    transition is applied to the shared table.
     """
 
     config_class = TabularConfig
     config: TabularConfig
+    _state_attrs = ("q_table",)
 
     def _check_spaces(self) -> None:
         check_discrete(self.observation_space, "observation space")
@@ -65,6 +68,8 @@ class TabularAgent(BaseAgent):
         self._epsilon_schedule = linear_schedule(
             self.config.epsilon_start, self.config.epsilon_end, self.config.epsilon_decay_steps
         )
+        # SARSA must execute the next action it bootstrapped from: -1 = none chosen yet
+        self._pending_actions = np.full(self.n_envs, -1, dtype=np.int64)
 
     @property
     def epsilon(self) -> float:
@@ -97,39 +102,26 @@ class TabularAgent(BaseAgent):
     ) -> float:
         """Return the bootstrapped target for the update."""
 
-    def _learn(self, total_timesteps: int, log_interval: int) -> None:
-        end = self.num_timesteps + total_timesteps
+    def _select_actions(self, obs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        actions = np.empty(self.n_envs, dtype=np.int64)
+        for i in range(self.n_envs):
+            pending = self._pending_actions[i]
+            actions[i] = pending if pending >= 0 else self._explore(int(obs[i]))
+        self._pending_actions[:] = -1
+        return actions, actions
+
+    def _observe(self, transition: Transition) -> None:
         alpha = self.config.alpha
-        state = int(self._obs)
-        action = self._explore(state)
-        while self.num_timesteps < end:
-            next_obs, reward, terminated, truncated, _ = self._env_step(action)
-            next_state = int(next_obs)
+        for i in range(self.n_envs):
+            state, action = int(transition.obs[i]), int(transition.actions[i])
+            next_state = int(transition.next_obs[i])
+            terminated = bool(transition.terminated[i])
             next_action = self._explore(next_state)
-            target = self._td_target(reward, next_state, next_action, terminated)
+            target = self._td_target(float(transition.rewards[i]), next_state, next_action,
+                                     terminated)
             self.q_table[state, action] += alpha * (target - self.q_table[state, action])
+            if not (terminated or transition.truncated[i]):
+                self._pending_actions[i] = next_action
 
-            done = terminated or truncated
-            if done:
-                state = int(self._reset_env())
-                action = self._explore(state)
-            else:
-                self._obs = next_obs
-                state, action = next_state, next_action
-
-            if not self._on_step():
-                return
-            if done and self._n_episodes % log_interval == 0:
-                self._log_training({"train/epsilon": self.epsilon})
-
-    # ------------------------------------------------------------- persistence
-    def _get_state(self) -> Dict[str, Any]:
-        return {"q_table": self.q_table.copy()}
-
-    def _set_state(self, state: Dict[str, Any]) -> None:
-        table = np.asarray(state["q_table"], dtype=np.float64)
-        if table.shape != self.q_table.shape:
-            raise ValueError(
-                f"Saved Q-table has shape {table.shape}, environment needs {self.q_table.shape}"
-            )
-        self.q_table = table
+    def _train_stats(self) -> Dict[str, Any]:
+        return {"train/epsilon": self.epsilon}

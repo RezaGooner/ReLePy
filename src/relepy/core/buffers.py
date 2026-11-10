@@ -7,6 +7,8 @@ from typing import Iterator, NamedTuple, Optional, Tuple, Union
 import numpy as np
 import torch
 
+Device = Union[str, torch.device]
+
 
 class ReplayBatch(NamedTuple):
     observations: torch.Tensor  # (B, obs_dim)
@@ -34,9 +36,10 @@ class ReplayBuffer:
         if capacity <= 0:
             raise ValueError("capacity must be > 0")
         self.capacity = capacity
+        self.action_shape = tuple(action_shape)
         self.observations = np.zeros((capacity, obs_dim), dtype=np.float32)
         self.next_observations = np.zeros((capacity, obs_dim), dtype=np.float32)
-        self.actions = np.zeros((capacity, *action_shape), dtype=action_dtype)
+        self.actions: np.ndarray = np.zeros((capacity, *self.action_shape), dtype=action_dtype)
         self.rewards = np.zeros(capacity, dtype=np.float32)
         self.dones = np.zeros(capacity, dtype=np.float32)
         self.pos = 0
@@ -54,15 +57,32 @@ class ReplayBuffer:
         next_obs: np.ndarray,
         done: bool,
     ) -> None:
-        self.observations[self.pos] = obs
-        self.next_observations[self.pos] = next_obs
-        self.actions[self.pos] = action
-        self.rewards[self.pos] = reward
-        self.dones[self.pos] = float(done)
-        self.pos = (self.pos + 1) % self.capacity
-        self.size = min(self.size + 1, self.capacity)
+        """Store a single transition."""
+        self.extend(
+            np.asarray(obs)[None], np.asarray(action)[None], np.asarray([reward]),
+            np.asarray(next_obs)[None], np.asarray([done]),
+        )
 
-    def sample(self, batch_size: int, device: Union[str, torch.device] = "cpu") -> ReplayBatch:
+    def extend(
+        self,
+        obs: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        next_obs: np.ndarray,
+        dones: np.ndarray,
+    ) -> None:
+        """Store a batch of transitions (leading dimension = batch)."""
+        n = len(obs)
+        idx = (self.pos + np.arange(n)) % self.capacity
+        self.observations[idx] = obs
+        self.next_observations[idx] = next_obs
+        self.actions[idx] = np.reshape(actions, (n, *self.action_shape))
+        self.rewards[idx] = rewards
+        self.dones[idx] = np.asarray(dones, dtype=np.float32)
+        self.pos = int((self.pos + n) % self.capacity)
+        self.size = min(self.size + n, self.capacity)
+
+    def sample(self, batch_size: int, device: Device = "cpu") -> ReplayBatch:
         if self.size == 0:
             raise ValueError("Cannot sample from an empty buffer")
         idx = self.rng.integers(0, self.size, size=batch_size)
@@ -89,11 +109,11 @@ class RolloutBatch(NamedTuple):
 
 
 class RolloutBuffer:
-    """Fixed-length on-policy buffer with Generalized Advantage Estimation (GAE).
+    """Fixed-length on-policy buffer of shape ``(n_steps, n_envs, ...)`` with GAE(lambda).
 
-    ``dones[t]`` marks that the episode ended (terminated *or* truncated) right after step ``t``.
-    For time-limit truncations the agent should add ``gamma * V(s_final)`` to the reward before
-    calling :meth:`add`, which is what ReLePy's on-policy agents do.
+    ``dones[t, i]`` marks that the episode of env ``i`` ended (terminated *or* truncated) right
+    after step ``t``. For time-limit truncations the agent adds ``gamma * V(s_final)`` to the
+    reward before calling :meth:`add`, which is what ReLePy's on-policy agents do.
     """
 
     def __init__(
@@ -103,22 +123,32 @@ class RolloutBuffer:
         action_shape: Tuple[int, ...] = (),
         action_dtype: type = np.int64,
         rng: Optional[np.random.Generator] = None,
+        n_envs: int = 1,
     ) -> None:
         self.n_steps = n_steps
-        self.observations = np.zeros((n_steps, obs_dim), dtype=np.float32)
-        self.actions = np.zeros((n_steps, *action_shape), dtype=action_dtype)
-        self.rewards = np.zeros(n_steps, dtype=np.float32)
-        self.dones = np.zeros(n_steps, dtype=np.float32)
-        self.values = np.zeros(n_steps, dtype=np.float32)
-        self.log_probs = np.zeros(n_steps, dtype=np.float32)
-        self.advantages = np.zeros(n_steps, dtype=np.float32)
-        self.returns = np.zeros(n_steps, dtype=np.float32)
+        self.n_envs = n_envs
+        self.obs_dim = obs_dim
+        self.action_shape = tuple(action_shape)
+        shape = (n_steps, n_envs)
+        self.observations = np.zeros((*shape, obs_dim), dtype=np.float32)
+        self.actions: np.ndarray = np.zeros((*shape, *self.action_shape), dtype=action_dtype)
+        self.rewards = np.zeros(shape, dtype=np.float32)
+        self.dones = np.zeros(shape, dtype=np.float32)
+        self.values = np.zeros(shape, dtype=np.float32)
+        self.log_probs = np.zeros(shape, dtype=np.float32)
+        self.advantages = np.zeros(shape, dtype=np.float32)
+        self.returns = np.zeros(shape, dtype=np.float32)
         self.pos = 0
         self.rng = rng if rng is not None else np.random.default_rng()
 
     @property
     def full(self) -> bool:
         return self.pos >= self.n_steps
+
+    @property
+    def size(self) -> int:
+        """Number of samples once full (``n_steps * n_envs``)."""
+        return self.n_steps * self.n_envs
 
     def reset(self) -> None:
         self.pos = 0
@@ -127,29 +157,31 @@ class RolloutBuffer:
         self,
         obs: np.ndarray,
         action: Union[int, np.ndarray],
-        reward: float,
-        done: bool,
-        value: float,
-        log_prob: float,
+        reward: Union[float, np.ndarray],
+        done: Union[bool, np.ndarray],
+        value: Union[float, np.ndarray],
+        log_prob: Union[float, np.ndarray],
     ) -> None:
+        """Add one step for every env (scalars are accepted when ``n_envs == 1``)."""
         if self.full:
             raise RuntimeError("RolloutBuffer is full; call reset() first")
-        i = self.pos
-        self.observations[i] = obs
-        self.actions[i] = action
-        self.rewards[i] = reward
-        self.dones[i] = float(done)
-        self.values[i] = value
-        self.log_probs[i] = log_prob
+        i, n = self.pos, self.n_envs
+        self.observations[i] = np.reshape(obs, (n, self.obs_dim))
+        self.actions[i] = np.reshape(action, (n, *self.action_shape))
+        self.rewards[i] = np.reshape(reward, (n,))
+        self.dones[i] = np.reshape(np.asarray(done, dtype=np.float32), (n,))
+        self.values[i] = np.reshape(value, (n,))
+        self.log_probs[i] = np.reshape(log_prob, (n,))
         self.pos += 1
 
     def compute_returns_and_advantages(
-        self, last_value: float, gamma: float, gae_lambda: float
+        self, last_value: Union[float, np.ndarray], gamma: float, gae_lambda: float
     ) -> None:
-        """Fill ``advantages`` and ``returns`` using GAE(lambda)."""
-        last_gae = 0.0
+        """Fill ``advantages`` and ``returns`` using GAE(lambda), per environment."""
+        last_values = np.broadcast_to(np.asarray(last_value, dtype=np.float32), (self.n_envs,))
+        last_gae = np.zeros(self.n_envs, dtype=np.float32)
         for t in reversed(range(self.n_steps)):
-            next_value = last_value if t == self.n_steps - 1 else self.values[t + 1]
+            next_value = last_values if t == self.n_steps - 1 else self.values[t + 1]
             non_terminal = 1.0 - self.dones[t]
             delta = self.rewards[t] + gamma * next_value * non_terminal - self.values[t]
             last_gae = delta + gamma * gae_lambda * non_terminal * last_gae
@@ -157,17 +189,18 @@ class RolloutBuffer:
         self.returns = self.advantages + self.values
 
     def get(
-        self, batch_size: Optional[int] = None, device: Union[str, torch.device] = "cpu"
+        self, batch_size: Optional[int] = None, device: Device = "cpu"
     ) -> Iterator[RolloutBatch]:
-        """Yield shuffled mini-batches (a single full batch if ``batch_size`` is ``None``)."""
+        """Yield shuffled mini-batches over all ``n_steps * n_envs`` samples
+        (a single full batch if ``batch_size`` is ``None``)."""
         if not self.full:
             raise RuntimeError("RolloutBuffer is not full")
-        n = self.n_steps
+        n = self.size
         size = n if batch_size is None else batch_size
         order = torch.as_tensor(self.rng.permutation(n), device=device, dtype=torch.long)
 
         def t(arr: np.ndarray) -> torch.Tensor:
-            return torch.as_tensor(arr, device=device)
+            return torch.as_tensor(arr.reshape(n, *arr.shape[2:]), device=device)
 
         data = (
             t(self.observations),

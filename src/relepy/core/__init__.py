@@ -1,4 +1,7 @@
-"""Core building blocks: agent base class, configs, callbacks, buffers, policies.
+"""Core building blocks.
 
-``buffers`` and ``policies`` require PyTorch and are therefore not imported here.
+* torch-free: ``base`` (BaseAgent), ``config``, ``collector``, ``loops``, ``callbacks``,
+  ``registry``, ``serialization``;
+* PyTorch: ``buffers``, ``policies``, ``losses``, ``off_policy``, ``on_policy``
+  (not imported here so that tabular methods work without PyTorch).
 """

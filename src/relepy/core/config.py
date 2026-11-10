@@ -26,9 +26,12 @@ class BaseConfig:
 
     Attributes:
         gamma: Discount factor in ``[0, 1]``.
+        n_envs: Number of environments stepped in parallel (needs an env id or factory when
+            ``> 1``). Timestep budgets always count steps summed over all environments.
     """
 
     gamma: float = 0.99
+    n_envs: int = 1
 
     def __post_init__(self) -> None:
         self.validate()
@@ -37,6 +40,9 @@ class BaseConfig:
         """Raise ``ValueError`` for invalid values. Subclasses extend this and call ``super()``."""
         if not 0.0 <= self.gamma <= 1.0:
             raise ValueError(f"gamma must be in [0, 1], got {self.gamma}")
+        if int(self.n_envs) < 1:
+            raise ValueError(f"n_envs must be >= 1, got {self.n_envs}")
+        self.n_envs = int(self.n_envs)
 
     # ------------------------------------------------------------------ helpers
     def to_dict(self) -> Dict[str, Any]:
@@ -72,9 +78,10 @@ class BaseConfig:
 
     @classmethod
     def from_json(cls: Type[T], source: Union[str, Path]) -> T:
-        """Load from a JSON file path or a JSON string."""
-        text = str(source)
-        if not text.lstrip().startswith("{"):
+        """Load from a JSON file (``Path`` or path string) or from a JSON object string."""
+        if isinstance(source, str) and source.lstrip().startswith("{"):
+            text = source
+        else:
             text = Path(source).read_text(encoding="utf-8")
         return cls.from_dict(json.loads(text))
 

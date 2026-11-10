@@ -4,6 +4,11 @@ Algorithms are imported lazily so that tabular methods work without PyTorch::
 
     from relepy import QLearning          # NumPy only
     from relepy import DQN, PPO           # requires ``pip install relepy[torch]``
+
+Agents can also be built and loaded by name::
+
+    agent = relepy.make("ppo", "CartPole-v1", n_envs=4)
+    agent = relepy.load("model.relepy", "CartPole-v1")
 """
 
 from __future__ import annotations
@@ -24,6 +29,15 @@ _LAZY_ATTRS: Dict[str, str] = {
     "CheckpointCallback": "relepy.core.callbacks",
     "StopOnRewardThreshold": "relepy.core.callbacks",
     "evaluate_policy": "relepy.utils.evaluation",
+    "Collector": "relepy.core.collector",
+    "Transition": "relepy.core.collector",
+    "StepwiseAgent": "relepy.core.loops",
+    # registry
+    "make": "relepy.core.registry",
+    "load": "relepy.core.registry",
+    "register": "relepy.core.registry",
+    "get_algorithm": "relepy.core.registry",
+    "list_algorithms": "relepy.core.registry",
     # tabular (no torch)
     "TabularConfig": "relepy.algorithms.tabular",
     "QLearning": "relepy.algorithms.tabular",
@@ -48,8 +62,10 @@ _LAZY_ATTRS: Dict[str, str] = {
     "TD3": "relepy.algorithms.actor_critic",
     "SACConfig": "relepy.algorithms.actor_critic",
     "SAC": "relepy.algorithms.actor_critic",
-    # sample environments
+    # environments
     "GridWorldEnv": "relepy.envs",
+    "SyncVecEnv": "relepy.envs",
+    "make_vec_env": "relepy.envs",
 }
 
 __all__ = ["__version__", *_LAZY_ATTRS]

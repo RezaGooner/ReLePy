@@ -54,3 +54,21 @@ def make_obs_preprocessor(space: spaces.Space) -> Tuple[int, Callable[[Any], np.
         f"Unsupported observation space {type(space).__name__}; use Discrete or Box "
         "(wrap the environment to convert other spaces)."
     )
+
+
+def make_batch_preprocessor(space: spaces.Space) -> Tuple[int, Callable[[Any], np.ndarray]]:
+    """Batched version of :func:`make_obs_preprocessor`: ``(n, ...)`` -> ``(n, feature_dim)``."""
+    dim, _ = make_obs_preprocessor(space)  # validates the space
+    if isinstance(space, spaces.Discrete):
+        eye = np.eye(dim, dtype=np.float32)
+
+        def one_hot(obs: Any) -> np.ndarray:
+            return eye[np.asarray(obs, dtype=np.int64).reshape(-1)]
+
+        return dim, one_hot
+
+    def flatten(obs: Any) -> np.ndarray:
+        arr = np.asarray(obs, dtype=np.float32)
+        return arr.reshape(arr.shape[0], dim)
+
+    return dim, flatten
